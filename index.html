@@ -218,15 +218,6 @@
                 <span class="font-bold block text-cyan-400">Altura de Trabalho calculada:</span>
                 <span id="diff-value">0.000</span> m de diferença.
               </div>
-
-              <!-- Heuristics advanced section -->
-              <div class="mt-2 pt-2 border-t border-slate-850">
-                <div class="flex items-center justify-between text-[10px] uppercase font-bold text-slate-500 tracking-wider mb-2">
-                  <span>Sensibilidade Grid (Y)</span>
-                  <span id="tolerance-val" class="font-mono text-cyan-400">6px</span>
-                </div>
-                <input type="range" id="tolerance-slider" min="1" max="25" step="1" value="6" class="w-full h-1.5 bg-slate-950 rounded-lg appearance-none cursor-pointer accent-cyan-500" />
-              </div>
             </div>
           </div>
 
@@ -326,8 +317,6 @@
       const metaTerreno = document.getElementById('meta-terreno');
       const metaProjeto = document.getElementById('meta-projeto');
       const diffValue = document.getElementById('diff-value');
-      const toleranceSlider = document.getElementById('tolerance-slider');
-      const toleranceVal = document.getElementById('tolerance-val');
       const addLeftBtn = document.getElementById('add-left-btn');
       const addRightBtn = document.getElementById('add-right-btn');
       const rangeStartInput = document.getElementById('range-start');
@@ -394,16 +383,7 @@
         }
       });
 
-      // Tolerance logic
-      toleranceSlider.addEventListener('input', (e) => {
-        const val = Number(e.target.value);
-        state.tolerance = val;
-        toleranceVal.textContent = val + 'px';
-      });
 
-      toleranceSlider.addEventListener('change', () => {
-        recalculateGridForPages();
-      });
 
       // Add field elements to lists
       addLeftBtn.addEventListener('click', () => {
@@ -1005,9 +985,7 @@
       document.getElementById('meta-terreno').value = page.extracted.cotaTerreno;
       document.getElementById('meta-projeto').value = page.extracted.cotaProjeto;
 
-      // Tolerance slider sync
-      document.getElementById('tolerance-slider').value = state.tolerance;
-      document.getElementById('tolerance-val').textContent = state.tolerance + 'px';
+
 
       updateCalculatedDiff();
       renderPlatformTables();
