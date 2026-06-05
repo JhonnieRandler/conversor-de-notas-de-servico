@@ -1100,9 +1100,9 @@
         const normalizedStr = str.replace(',', '.');
         const num = parseFloat(normalizedStr);
         if (!isNaN(num)) {
-          return String(num).replace('.', ',');
+          return num;
         }
-        return str.replace('.', ',');
+        return str;
       };
 
       try {
@@ -1140,7 +1140,11 @@
           for (let i = 0; i < maxLeftPoints; i++) {
             const pt = p.extracted.esquerda[i];
             if (pt) {
-              row.push(pt.pto || '', formatValueForSheet(pt.dist), formatValueForSheet(pt.cota));
+              row.push(
+                formatValueForSheet(pt.pto),
+                formatValueForSheet(pt.dist),
+                formatValueForSheet(pt.cota)
+              );
             } else {
               row.push('', '', '');
             }
@@ -1149,7 +1153,11 @@
           for (let i = 0; i < maxRightPoints; i++) {
             const pt = p.extracted.direita[i];
             if (pt) {
-              row.push(pt.pto || '', formatValueForSheet(pt.dist), formatValueForSheet(pt.cota));
+              row.push(
+                formatValueForSheet(pt.pto),
+                formatValueForSheet(pt.dist),
+                formatValueForSheet(pt.cota)
+              );
             } else {
               row.push('', '', '');
             }
