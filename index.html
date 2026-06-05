@@ -102,7 +102,7 @@
       
       <!-- DEFAULT LANDING SECTION -->
       <div id="landing-view" class="flex-1 flex flex-col items-center justify-center p-12 border-2 border-dashed border-slate-800 bg-slate-905/40 hover:border-slate-705 transition-all rounded-3xl min-h-[50vh]">
-        <input type="file" id="file-input" accept=".pdf" class="hidden" />
+        <input type="file" id="file-input" accept=".pdf" multiple class="hidden" />
 
         <div class="text-center flex flex-col items-center max-w-lg">
           <div class="mb-5 p-4 rounded-full bg-slate-900 border border-slate-800 text-slate-400 shadow-xl">
@@ -112,7 +112,7 @@
             Importação do PDF de Notas de Serviço
           </h3>
           <p class="text-slate-450 text-xs mt-2 leading-relaxed">
-            Esta ferramenta converte as tabelas de seção transversal de notas de serviço de pavimento acabado em um formato estruturado com estacas, cotas e sequências de pontos. Você pode selecionar o arquivo PDF original ou arrastá-lo diretamente para a área abaixo para processar os dados e exportá-los em uma planilha de Excel perfeitamente alinhada e pronta para uso.
+            Esta ferramenta converte as tabelas de seção transversal de notas de serviço de pavimento acabado em um formato estruturado com estacas, cotas e sequências de pontos. Você pode selecionar <b>um ou mais arquivos PDF</b> ou arrastá-los diretamente para a área abaixo para processar os dados de todos eles juntos e exportá-los em uma planilha de Excel perfeitamente alinhada.
           </p>
           
           <!-- Optional page range selector -->
@@ -121,7 +121,7 @@
               Intervalo de Páginas (Opcional)
             </span>
             <p class="text-[10px] text-slate-400 mb-3.5 leading-relaxed">
-              Defina o início e fim caso queira tratar apenas um trecho específico (ex: da página 448 até a 522). Deixe em branco para importar o PDF completo.
+              Defina o início e fim caso queira tratar apenas um trecho específico (ex: da página 448 até a 522 de cada arquivo). Deixe em branco para importar os PDFs completos.
             </p>
             <div class="grid grid-cols-2 gap-3">
               <div class="flex flex-col gap-1">
@@ -296,9 +296,9 @@
   <script>
     // Application state
     let state = {
-      file: null,
+      files: [],
       pages: [],
-      selectedPageNum: null,
+      selectedPageUid: '',
       tolerance: 6,
       rangeStart: '',
       rangeEnd: '',
@@ -329,8 +329,8 @@
       // Trigger file selector
       selectFileBtn.addEventListener('click', () => fileInput.click());
       fileInput.addEventListener('change', (e) => {
-        if (e.target.files && e.target.files[0]) {
-          processPdfFile(e.target.files[0]);
+        if (e.target.files && e.target.files.length > 0) {
+          processPdfFiles(Array.from(e.target.files));
         }
       });
 
@@ -345,20 +345,20 @@
       landingView.addEventListener('drop', (e) => {
         e.preventDefault();
         landingView.classList.remove('border-cyan-400', 'bg-cyan-950/20');
-        if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-          processPdfFile(e.dataTransfer.files[0]);
+        if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+          processPdfFiles(Array.from(e.dataTransfer.files));
         }
       });
 
       // Selection drop-down page changer
       pageSelect.addEventListener('change', (e) => {
-        state.selectedPageNum = Number(e.target.value);
+        state.selectedPageUid = e.target.value;
         renderWorkspace();
       });
 
       // Metadata triggers
       metaEstaca.addEventListener('input', (e) => {
-        const page = state.pages.find(p => p.pageNum === state.selectedPageNum);
+        const page = state.pages.find(p => p.uid === state.selectedPageUid);
         if (page) {
           page.extracted.estaca = e.target.value;
           // Dynamically refresh dropdown label
@@ -368,7 +368,7 @@
 
       // Normalizes numbers to Brazilian style / standard numeric strings on focus loss
       metaTerreno.addEventListener('input', (e) => {
-        const page = state.pages.find(p => p.pageNum === state.selectedPageNum);
+        const page = state.pages.find(p => p.uid === state.selectedPageUid);
         if (page) {
           page.extracted.cotaTerreno = e.target.value;
           updateCalculatedDiff();
@@ -376,7 +376,7 @@
       });
 
       metaProjeto.addEventListener('input', (e) => {
-        const page = state.pages.find(p => p.pageNum === state.selectedPageNum);
+        const page = state.pages.find(p => p.uid === state.selectedPageUid);
         if (page) {
           page.extracted.cotaProjeto = e.target.value;
           updateCalculatedDiff();
@@ -387,7 +387,7 @@
 
       // Add field elements to lists
       addLeftBtn.addEventListener('click', () => {
-        const page = state.pages.find(p => p.pageNum === state.selectedPageNum);
+        const page = state.pages.find(p => p.uid === state.selectedPageUid);
         if (page) {
           page.extracted.esquerda.push({ pto: '', dist: '', cota: '' });
           renderPlatformTables();
@@ -395,7 +395,7 @@
       });
 
       addRightBtn.addEventListener('click', () => {
-        const page = state.pages.find(p => p.pageNum === state.selectedPageNum);
+        const page = state.pages.find(p => p.uid === state.selectedPageUid);
         if (page) {
           page.extracted.direita.push({ pto: '', dist: '', cota: '' });
           renderPlatformTables();
@@ -406,66 +406,70 @@
       lucide.createIcons();
     }
 
-    // Process PDF file structure
-    async function processPdfFile(file) {
+    // Process PDF files structures
+    async function processPdfFiles(selectedFiles) {
       if (!window.pdfjsLib) {
         showError("PDF.js library is not fully loaded yet. Please wait a second and retry.");
         return;
       }
-      state.file = file;
+      state.files = selectedFiles;
       hideError();
       toggleLoading(true);
 
       try {
-        const fileReader = new FileReader();
-        fileReader.onload = async function() {
-          try {
-            const typedarray = new Uint8Array(this.result);
-            const loadedPdf = await window.pdfjsLib.getDocument({ data: typedarray }).promise;
+        const allParsedPages = [];
+
+        for (let f = 0; f < selectedFiles.length; f++) {
+          const selectedFile = selectedFiles[f];
+          const arrayBuffer = await new Promise((resolve, reject) => {
+            const fileReader = new FileReader();
+            fileReader.onload = function() { resolve(this.result); };
+            fileReader.onerror = function() { reject(new Error("Erro ao ler arquivo " + selectedFile.name)); };
+            fileReader.readAsArrayBuffer(selectedFile);
+          });
+
+          const typedarray = new Uint8Array(arrayBuffer);
+          const loadedPdf = await window.pdfjsLib.getDocument({ data: typedarray }).promise;
+
+          const startNum = state.rangeStart ? Math.max(1, parseInt(state.rangeStart, 10)) : 1;
+          const endNum = state.rangeEnd ? Math.min(loadedPdf.numPages, parseInt(state.rangeEnd, 10)) : loadedPdf.numPages;
+
+          for (let i = startNum; i <= Math.min(loadedPdf.numPages, endNum); i++) {
+            const page = await loadedPdf.getPage(i);
+            const textContent = await page.getTextContent();
             
-            const parsedPages = [];
+            // Grid sorting and extraction
+            const gridRows = reconstructGridRows(textContent.items, state.tolerance);
+            const pageRawText = textContent.items.map(item => item.str).join(' ');
+            const cleanText = pageRawText.replace(/\s+/g, ' ').trim();
+            const extracted = runHeuristicExtractor(gridRows, cleanText);
 
-            const startNum = state.rangeStart ? Math.max(1, parseInt(state.rangeStart, 10)) : 1;
-            const endNum = state.rangeEnd ? Math.min(loadedPdf.numPages, parseInt(state.rangeEnd, 10)) : loadedPdf.numPages;
-
-            for (let i = startNum; i <= endNum; i++) {
-              const page = await loadedPdf.getPage(i);
-              const textContent = await page.getTextContent();
-              
-              // Grid sorting and extraction
-              const gridRows = reconstructGridRows(textContent.items, state.tolerance);
-              const pageRawText = textContent.items.map(item => item.str).join(' ');
-              const cleanText = pageRawText.replace(/\s+/g, ' ').trim();
-              const extracted = runHeuristicExtractor(gridRows, cleanText);
-
-              parsedPages.push({
-                pageNum: i,
-                rawText: cleanText,
-                gridRows,
-                extracted,
-                originalTextItems: textContent.items // cache for quick grouping sliders
-              });
-            }
-
-            if (parsedPages.length === 0) {
-              throw new Error("Nenhuma página pôde ser extraída dentro do intervalo especificado.");
-            }
-
-            state.pages = parsedPages;
-            state.selectedPageNum = parsedPages[0].pageNum;
-
-            toggleLoading(false);
-            showWorkspace(true);
-            renderWorkspace();
-          } catch (err) {
-            showError("Falha na extração de dados: " + (err.message || err));
-            toggleLoading(false);
+            allParsedPages.push({
+              uid: `${selectedFile.name}_p_${i}_f_${f}_${Date.now()}_${Math.random()}`,
+              fileName: selectedFile.name,
+              pageNum: i,
+              rawText: cleanText,
+              gridRows,
+              extracted,
+              originalTextItems: textContent.items // cache for quick grouping sliders
+            });
           }
-        };
-        fileReader.readAsArrayBuffer(file);
-      } catch (err) {
-        showError("Erro ao ler o arquivo selecionado: " + (err.message || err));
+        }
+
+        if (allParsedPages.length === 0) {
+          throw new Error("Nenhuma página pôde ser extraída de nenhum dos arquivos dentro do intervalo especificado.");
+        }
+
+        state.pages = allParsedPages;
+        state.selectedPageUid = allParsedPages[0].uid;
+
         toggleLoading(false);
+        showWorkspace(true);
+        renderWorkspace();
+      } catch (err) {
+        showError("Falha na extração de dados: " + (err.message || err));
+        toggleLoading(false);
+        state.files = [];
       }
     }
 
@@ -935,7 +939,7 @@
       actionsBox.innerHTML = `
         <button id="reset-btn" class="flex items-center gap-1.5 px-3 py-2 bg-slate-900 hover:bg-slate-800 text-slate-300 hover:text-white rounded-lg text-xs border border-slate-800 transition-colors">
           <i data-lucide="rotate-ccw" class="w-3.5 h-3.5"></i>
-          Resetar PDF
+          Resetar Seleção
         </button>
         <button id="excel-btn" class="flex items-center gap-1.5 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold shadow-md border border-emerald-500/20 transition-all active:scale-95 duration-150">
           <i data-lucide="download" class="w-3.5 h-3.5"></i>
@@ -944,9 +948,9 @@
       `;
 
       document.getElementById('reset-btn').addEventListener('click', () => {
-        state.file = null;
+        state.files = [];
         state.pages = [];
-        state.selectedPageNum = null;
+        state.selectedPageUid = '';
         showWorkspace(false);
       });
 
@@ -957,11 +961,14 @@
     function updatePageDropdown() {
       const pageSelect = document.getElementById('page-select');
       const currentVal = pageSelect.value;
-      pageSelect.innerHTML = state.pages.map(p => `
-        <option value="${p.pageNum}">
-          P${p.pageNum} (${p.extracted.estaca || 'Sem Nome'})
-        </option>
-      `).join('');
+      pageSelect.innerHTML = state.pages.map(p => {
+        const filePrefix = state.files.length > 1 ? `[${p.fileName.length > 20 ? p.fileName.slice(0, 17) + '...' : p.fileName}] ` : '';
+        return `
+          <option value="${p.uid}">
+            ${filePrefix}P${p.pageNum} (${p.extracted.estaca || 'Sem Nome'})
+          </option>
+        `;
+      }).join('');
       pageSelect.value = currentVal;
     }
 
@@ -971,13 +978,16 @@
       const selectElement = document.getElementById('page-select');
       
       // Load dropdown items
-      selectElement.innerHTML = state.pages.map(p => `
-        <option value="${p.pageNum}" ${p.pageNum === state.selectedPageNum ? 'selected' : ''}>
-          P${p.pageNum} (${p.extracted.estaca || 'Sem Nome'})
-        </option>
-      `).join('');
+      selectElement.innerHTML = state.pages.map(p => {
+        const filePrefix = state.files.length > 1 ? `[${p.fileName.length > 20 ? p.fileName.slice(0, 17) + '...' : p.fileName}] ` : '';
+        return `
+          <option value="${p.uid}" ${p.uid === state.selectedPageUid ? 'selected' : ''}>
+            ${filePrefix}P${p.pageNum} (${p.extracted.estaca || 'Sem Nome'})
+          </option>
+        `;
+      }).join('');
 
-      const page = state.pages.find(p => p.pageNum === state.selectedPageNum);
+      const page = state.pages.find(p => p.uid === state.selectedPageUid);
       if (!page) return;
 
       // Fill metadata fields
@@ -985,15 +995,13 @@
       document.getElementById('meta-terreno').value = page.extracted.cotaTerreno;
       document.getElementById('meta-projeto').value = page.extracted.cotaProjeto;
 
-
-
       updateCalculatedDiff();
       renderPlatformTables();
       lucide.createIcons();
     }
 
     function updateCalculatedDiff() {
-      const page = state.pages.find(p => p.pageNum === state.selectedPageNum);
+      const page = state.pages.find(p => p.uid === state.selectedPageUid);
       if (!page) return;
 
       const terrenoVal = parseFloat(page.extracted.cotaTerreno);
@@ -1012,7 +1020,7 @@
 
     // Render Side pairwise grids (Left and Right Platforms)
     function renderPlatformTables() {
-      const page = state.pages.find(p => p.pageNum === state.selectedPageNum);
+      const page = state.pages.find(p => p.uid === state.selectedPageUid);
       if (!page) return;
 
       const leftBody = document.getElementById('left-table-body');
@@ -1029,16 +1037,16 @@
         leftBody.innerHTML = page.extracted.esquerda.map((item, idx) => `
           <div class="grid grid-cols-4 gap-1.5 items-center">
             <input type="text" value="${item.pto}" 
-              oninput="handleEditField(${page.pageNum}, 'esquerda', ${idx}, 'pto', this.value)"
+              oninput="handleEditField('${page.uid}', 'esquerda', ${idx}, 'pto', this.value)"
               class="px-2 py-1 bg-slate-950 rounded text-center font-mono text-xs text-white border border-slate-800 focus:outline-none focus:border-cyan-500" />
             <input type="text" value="${item.dist}" 
-              oninput="handleEditField(${page.pageNum}, 'esquerda', ${idx}, 'dist', this.value)"
+              oninput="handleEditField('${page.uid}', 'esquerda', ${idx}, 'dist', this.value)"
               class="px-2 py-1 bg-slate-950 rounded text-center font-mono text-xs text-cyan-300 border border-slate-800 focus:outline-none focus:border-cyan-500" />
             <input type="text" value="${item.cota}" 
-              oninput="handleEditField(${page.pageNum}, 'esquerda', ${idx}, 'cota', this.value)"
+              oninput="handleEditField('${page.uid}', 'esquerda', ${idx}, 'cota', this.value)"
               class="px-2 py-1 bg-slate-950 rounded text-center font-mono text-xs text-slate-300 border border-slate-800 focus:outline-none focus:border-cyan-500" />
-            <button onclick="handleDeleteField(${page.pageNum}, 'esquerda', ${idx})" 
-              class="text-[10px] text-rose-450 hover:text-rose-350 text-right pr-2 text-rose-500 hover:text-rose-400 transition-colors">
+            <button onclick="handleDeleteField('${page.uid}', 'esquerda', ${idx})" 
+              class="text-[10px] text-rose-450 hover:text-rose-355 text-right pr-2 text-rose-500 hover:text-rose-400 transition-colors">
               excluir
             </button>
           </div>
@@ -1056,16 +1064,16 @@
         rightBody.innerHTML = page.extracted.direita.map((item, idx) => `
           <div class="grid grid-cols-4 gap-1.5 items-center">
             <input type="text" value="${item.pto}" 
-              oninput="handleEditField(${page.pageNum}, 'direita', ${idx}, 'pto', this.value)"
+              oninput="handleEditField('${page.uid}', 'direita', ${idx}, 'pto', this.value)"
               class="px-2 py-1 bg-slate-950 rounded text-center font-mono text-xs text-white border border-slate-800 focus:outline-none focus:border-cyan-500" />
             <input type="text" value="${item.dist}" 
-              oninput="handleEditField(${page.pageNum}, 'direita', ${idx}, 'dist', this.value)"
+              oninput="handleEditField('${page.uid}', 'direita', ${idx}, 'dist', this.value)"
               class="px-2 py-1 bg-slate-950 rounded text-center font-mono text-xs text-emerald-300 border border-slate-800 focus:outline-none focus:border-cyan-500" />
             <input type="text" value="${item.cota}" 
-              oninput="handleEditField(${page.pageNum}, 'direita', ${idx}, 'cota', this.value)"
+              oninput="handleEditField('${page.uid}', 'direita', ${idx}, 'cota', this.value)"
               class="px-2 py-1 bg-slate-950 rounded text-center font-mono text-xs text-slate-300 border border-slate-800 focus:outline-none focus:border-cyan-500" />
-            <button onclick="handleDeleteField(${page.pageNum}, 'direita', ${idx})" 
-              class="text-[10px] text-rose-450 hover:text-rose-350 text-right pr-2 text-rose-500 hover:text-rose-400 transition-colors">
+            <button onclick="handleDeleteField('${page.uid}', 'direita', ${idx})" 
+              class="text-[10px] text-rose-450 hover:text-rose-355 text-right pr-2 text-rose-500 hover:text-rose-400 transition-colors">
               excluir
             </button>
           </div>
@@ -1074,15 +1082,15 @@
     }
 
     // Input state synchronization callbacks made globally accessible
-    window.handleEditField = function(pageNum, side, index, key, val) {
-      const page = state.pages.find(p => p.pageNum === pageNum);
+    window.handleEditField = function(uid, side, index, key, val) {
+      const page = state.pages.find(p => p.uid === uid);
       if (page && page.extracted[side][index]) {
         page.extracted[side][index][key] = val;
       }
     };
 
-    window.handleDeleteField = function(pageNum, side, index) {
-      const page = state.pages.find(p => p.pageNum === pageNum);
+    window.handleDeleteField = function(uid, side, index) {
+      const page = state.pages.find(p => p.uid === uid);
       if (page) {
         page.extracted[side].splice(index, 1);
         renderPlatformTables();
@@ -1170,7 +1178,7 @@
         const wb = XLSX.utils.book_new();
         XLSX.utils.book_append_sheet(wb, ws, "Dados Alinhados");
         
-        const safeFilename = state.file ? state.file.name.replace('.pdf', '') : 'dados_mapeamento';
+        const safeFilename = state.files && state.files.length > 0 ? (state.files.length > 1 ? state.files[0].name.replace('.pdf', '') + '_multi' : state.files[0].name.replace('.pdf', '')) : 'dados_mapeamento';
         XLSX.writeFile(wb, `${safeFilename}_excel.xlsx`);
       } catch (e) {
         showError("Erro ao gerar a planilha Excel: " + (e.message || e));
