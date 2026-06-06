@@ -97,6 +97,15 @@
       <span id="error-text"></span>
     </div>
 
+    <!-- Warning message banner -->
+    <div id="warning-message" class="hidden mb-6 p-4 bg-amber-950/40 border border-amber-900/40 text-amber-200 rounded-2xl text-xs animate-fadeIn flex items-center justify-between gap-2">
+      <div class="flex items-center gap-2">
+        <i data-lucide="alert-triangle" class="w-4 h-4 text-amber-400 shrink-0"></i>
+        <span id="warning-text"></span>
+      </div>
+      <button onclick="hideWarning()" class="text-amber-400 hover:text-white font-bold px-2 py-0.5 rounded hover:bg-amber-900/20 transition-colors uppercase text-[10px] font-mono">Dispensar</button>
+    </div>
+
     <!-- Main Content Dynamic Container -->
     <main id="main-content" class="flex-1 flex flex-col gap-6">
       
@@ -414,10 +423,13 @@
       }
       state.files = selectedFiles;
       hideError();
+      hideWarning();
       toggleLoading(true);
 
       try {
         const allParsedPages = [];
+        const seenEstacas = new Set();
+        let ignoredCount = 0;
 
         for (let f = 0; f < selectedFiles.length; f++) {
           const selectedFile = selectedFiles[f];
@@ -444,6 +456,17 @@
             const cleanText = pageRawText.replace(/\s+/g, ' ').trim();
             const extracted = runHeuristicExtractor(gridRows, cleanText);
 
+            const estacaClean = extracted.estaca ? extracted.estaca.trim() : '';
+            const normalizedEstaca = estacaClean.replace(/\s+/g, '').replace(',', '.').toUpperCase();
+
+            if (normalizedEstaca) {
+              if (seenEstacas.has(normalizedEstaca)) {
+                ignoredCount++;
+                continue;
+              }
+              seenEstacas.add(normalizedEstaca);
+            }
+
             allParsedPages.push({
               uid: `${selectedFile.name}_p_${i}_f_${f}_${Date.now()}_${Math.random()}`,
               fileName: selectedFile.name,
@@ -458,6 +481,10 @@
 
         if (allParsedPages.length === 0) {
           throw new Error("Nenhuma página pôde ser extraída de nenhum dos arquivos dentro do intervalo especificado.");
+        }
+
+        if (ignoredCount > 0) {
+          showWarning(`Atenção: Foram encontradas e ignoradas ${ignoredCount} ocorrência(s) de estaca(s) repetida(s) no(s) arquivo(s) para evitar erros de importação.`);
         }
 
         state.pages = allParsedPages;
@@ -933,6 +960,20 @@
       document.getElementById('error-message').classList.add('hidden');
     }
 
+    function showWarning(msg) {
+      const warnBox = document.getElementById('warning-message');
+      const warnText = document.getElementById('warning-text');
+      warnText.textContent = msg;
+      warnBox.classList.remove('hidden');
+      lucide.createIcons();
+    }
+
+    function hideWarning() {
+      const warnBox = document.getElementById('warning-message');
+      if (warnBox) warnBox.classList.add('hidden');
+    }
+    window.hideWarning = hideWarning;
+
     // Action buttons in Top Header of the layout loaded dynamically
     function renderHeaderActions() {
       const actionsBox = document.getElementById('header-actions');
@@ -952,6 +993,8 @@
         state.pages = [];
         state.selectedPageUid = '';
         showWorkspace(false);
+        hideError();
+        hideWarning();
       });
 
       document.getElementById('excel-btn').addEventListener('click', exportToExcel);
