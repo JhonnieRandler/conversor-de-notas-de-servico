@@ -608,7 +608,19 @@
     // Context Heuristic Engine
     function runHeuristicExtractor(gridRows, pageText) {
       function extractValueForLabel(row, labelSub) {
-        const idx = row.findIndex(item => item.text.toLowerCase().includes(labelSub.toLowerCase()));
+        const idx = row.findIndex(item => {
+          const textLower = item.text.toLowerCase();
+          if (labelSub === 'terr' && (
+            textLower.includes('terraplenagem') || 
+            textLower.includes('terrap') || 
+            textLower.includes('terap') || 
+            textLower.includes('aterro') || 
+            textLower.includes('aterr')
+          )) {
+            return false;
+          }
+          return textLower.includes(labelSub.toLowerCase());
+        });
         if (idx === -1) return null;
 
         const labelTokenText = row[idx].text;
@@ -651,26 +663,42 @@
       let cotaTerreno = '';
       let cotaProjeto = '';
 
-      gridRows.forEach(row => {
-        const rowStr = row.map(i => i.text).join(' ');
-        if (rowStr.toLowerCase().includes('terreno') || rowStr.toLowerCase().includes('terr') || rowStr.toLowerCase().includes('temeno')) {
-          const val = extractValueForLabel(row, 'terr') || extractValueForLabel(row, 'temeno') || extractValueForLabel(row, 'terreno');
-          if (val) cotaTerreno = val;
-        }
-        if (rowStr.toLowerCase().includes('projeto') || rowStr.toLowerCase().includes('proj')) {
-          const val = extractValueForLabel(row, 'proj') || extractValueForLabel(row, 'projeto');
-          if (val) cotaProjeto = val;
-        }
-      });
+      // Normalize pageText spaces to prevent newline/layout issues during extraction
+      const cleanText = pageText.replace(/\s+/g, ' ');
 
-      // Fallbacks
-      if (!cotaTerreno || cotaTerreno === '0') {
-        const m = pageText.match(/Cota\s+terreno\s*=\s*([0-9.,]+)/i);
-        if (m) cotaTerreno = m[1].replace(',', '.');
+      // Extract Cota Terreno & Cota Projeto / Cota Terrap from text directly with high precision
+      const terrenoRegex = /Cota\s+(?:terreno|temeno)\s*[:=]?\s*([0-9]+[.,][0-9]+|[0-9]+)/i;
+      const terrenoMatch = cleanText.match(terrenoRegex);
+      if (terrenoMatch) {
+        cotaTerreno = terrenoMatch[1].replace(',', '.');
       }
-      if (!cotaProjeto || cotaProjeto === '0') {
-        const m = pageText.match(/Cota\s+projeto\s*=\s*([0-9.,]+)/i);
-        if (m) cotaProjeto = m[1].replace(',', '.');
+
+      const projetoRegex = /Cota\s+(?:projeto|proj|terrap|terap)\s*[:=]?\s*([0-9]+[.,][0-9]+|[0-9]+)/i;
+      const projetoMatch = cleanText.match(projetoRegex);
+      if (projetoMatch) {
+        cotaProjeto = projetoMatch[1].replace(',', '.');
+      }
+
+      // Grid row fallbacks if regex was unable to locate values
+      if (!cotaTerreno || !cotaProjeto) {
+        gridRows.forEach(row => {
+          const rowStr = row.map(i => i.text).join(' ');
+          const rowStrLower = rowStr.toLowerCase();
+          
+          if (!cotaTerreno && (rowStrLower.includes('terreno') || rowStrLower.includes('temeno') || (rowStrLower.includes('terr') && !rowStrLower.includes('terraplenagem') && !rowStrLower.includes('terrap') && !rowStrLower.includes('terap')))) {
+            const val = extractValueForLabel(row, 'terr') || extractValueForLabel(row, 'temeno') || extractValueForLabel(row, 'terreno');
+            if (val) {
+              cotaTerreno = val;
+            }
+          }
+          
+          if (!cotaProjeto && (rowStrLower.includes('projeto') || rowStrLower.includes('proj') || rowStrLower.includes('terrap') || rowStrLower.includes('terap'))) {
+            const val = extractValueForLabel(row, 'proj') || extractValueForLabel(row, 'projeto') || extractValueForLabel(row, 'terrap') || extractValueForLabel(row, 'terap');
+            if (val) {
+              cotaProjeto = val;
+            }
+          }
+        });
       }
 
       // Anchor detection
