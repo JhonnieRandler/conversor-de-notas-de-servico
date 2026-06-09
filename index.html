@@ -607,320 +607,355 @@
 
     // Context Heuristic Engine
     function runHeuristicExtractor(gridRows, pageText) {
-      function extractValueForLabel(row, labelSub) {
-        const idx = row.findIndex(item => {
-          const textLower = item.text.toLowerCase();
-          if (labelSub === 'terr' && (
-            textLower.includes('terraplenagem') || 
-            textLower.includes('terrap') || 
-            textLower.includes('terap') || 
-            textLower.includes('aterro') || 
-            textLower.includes('aterr')
-          )) {
-            return false;
-          }
-          return textLower.includes(labelSub.toLowerCase());
-        });
-        if (idx === -1) return null;
+      // Real-time flat representation of coordinate items
+      const flattened = gridRows.reduce((acc, r) => [...acc, ...r], []);
 
-        const labelTokenText = row[idx].text;
-        const inlineMatch = labelTokenText.match(/=\s*([0-9.,]+)/) || labelTokenText.match(/:\s*([0-9.,]+)/) || labelTokenText.match(/([0-9]+\.[0-9]+)/) || labelTokenText.match(/([0-9]+,[0-9]+)/);
-        if (inlineMatch) {
-          return inlineMatch[1].replace(',', '.');
-        }
+      const isNumeric = (txt) => {
+        if (!txt) return false;
+        const clean = txt.trim().replace(/\s+/g, '').replace(',', '.');
+        return /^-?[0-9.]+$/.test(clean);
+      };
 
-        for (let j = idx + 1; j < row.length; j++) {
-          const textClean = row[j].text.trim();
-          if (textClean === '=' || textClean === ':' || textClean.toLowerCase() === 'terreno' || textClean.toLowerCase() === 'projeto' || textClean.toLowerCase() === 'cota') continue;
+      // Reconstruct page text in clean visual reading order row by row
+      const reconstructedPageText = gridRows
+        .map(row => row.map(item => item.text).join(' '))
+        .join('\n');
 
-          const numMatch = textClean.match(/^(-?[0-9.,]+)/);
-          if (numMatch) {
-            const val = numMatch[1];
-            if (/[0-9]/.test(val) && !val.includes('ª') && !val.includes('º')) {
-              return val.replace(',', '.');
-            }
-          }
-        }
-        return null;
-      }
-
-      // Station
+      // 1. Stations (Estacas) are typically marked with '+' like 105+0.98 or 2+100.98
       let estaca = '';
-      const estacaMatch = pageText.match(/ESTACA\s*([0-9a-zA-Z+.]+)/i) || pageText.match(/([0-9]+\+[0-9.]+)/);
-      if (estacaMatch) {
-        estaca = estacaMatch[1];
-      } else {
-        for (const row of gridRows) {
-          const estacaToken = row.find(item => item.text.includes('+'));
-          if (estacaToken) {
-            estaca = estacaToken.text;
+      // Spacing tolerant regexes allows space around structural '+' character
+      const estacaRegexes = [
+        /ESTACA\s*[#:]?\s*([0-9]+\s*\+\s*[0-9.,dD\s]+)/i,
+        /ESTACA\s*[#:]?\s*([0-9a-zA-Z+.,\s]+)/i,
+        /([0-9]+\s*\+\s*[0-9.,dD]+)/
+      ];
+
+      for (const rx of estacaRegexes) {
+        const match = reconstructedPageText.match(rx) || pageText.match(rx);
+        if (match) {
+          const candidate = match[1].trim();
+          if (candidate.includes('+') || /^\d/.test(candidate)) {
+            // If the candidate contains a '+', extract only the precise math section: e.g. "205+12.75"
+            const plusMatch = candidate.match(/(\d+\s*\+\s*\d+(?:[.,]\d+)?)/);
+            if (plusMatch) {
+              estaca = plusMatch[1].replace(/\s+/g, '');
+            } else {
+              // Keep only up to the first space or word boundary
+              const firstToken = candidate.split(/\s+/)[0];
+              estaca = firstToken.replace(/\s+/g, '');
+            }
             break;
           }
         }
       }
 
-      // Cota Terreno & Cota Projeto
-      let cotaTerreno = '';
-      let cotaProjeto = '';
-
-      // Normalize pageText spaces to prevent newline/layout issues during extraction
-      const cleanText = pageText.replace(/\s+/g, ' ');
-
-      // Extract Cota Terreno & Cota Projeto / Cota Terrap from text directly with high precision
-      const terrenoRegex = /Cota\s+(?:terreno|temeno)\s*[:=]?\s*([0-9]+[.,][0-9]+|[0-9]+)/i;
-      const terrenoMatch = cleanText.match(terrenoRegex);
-      if (terrenoMatch) {
-        cotaTerreno = terrenoMatch[1].replace(',', '.');
+      if (!estaca) {
+        // Fallback: search row tokens and join components if split across cells
+        for (const row of gridRows) {
+          const estacaToken = row.find(item => item.text.includes('+'));
+          if (estacaToken) {
+            const tokenIdx = row.indexOf(estacaToken);
+            let startNum = '';
+            let endNum = '';
+            
+            if (tokenIdx > 0) {
+              const leftText = row[tokenIdx - 1].text.trim();
+              if (/^\d+$/.test(leftText)) startNum = leftText;
+            }
+            if (tokenIdx < row.length - 1) {
+              const rightText = row[tokenIdx + 1].text.trim();
+              if (/^[0-9.,]+$/.test(rightText)) endNum = rightText;
+            }
+            
+            if (startNum && endNum) {
+              estaca = `${startNum}+${endNum}`;
+            } else {
+              const plusMatch = estacaToken.text.match(/(\d+\s*\+\s*\d+(?:[.,]\d+)?)/);
+              if (plusMatch) {
+                estaca = plusMatch[1].replace(/\s+/g, '');
+              } else {
+                estaca = estacaToken.text.trim().replace(/\s+/g, '');
+              }
+            }
+            break;
+          }
+        }
       }
 
-      const projetoRegex = /Cota\s+(?:projeto|proj|terrap|terap)\s*[:=]?\s*([0-9]+[.,][0-9]+|[0-9]+)/i;
-      const projetoMatch = cleanText.match(projetoRegex);
-      if (projetoMatch) {
-        cotaProjeto = projetoMatch[1].replace(',', '.');
-      }
-
-      // Grid row fallbacks if regex was unable to locate values
-      if (!cotaTerreno || !cotaProjeto) {
-        gridRows.forEach(row => {
-          const rowStr = row.map(i => i.text).join(' ');
-          const rowStrLower = rowStr.toLowerCase();
-          
-          if (!cotaTerreno && (rowStrLower.includes('terreno') || rowStrLower.includes('temeno') || (rowStrLower.includes('terr') && !rowStrLower.includes('terraplenagem') && !rowStrLower.includes('terrap') && !rowStrLower.includes('terap')))) {
-            const val = extractValueForLabel(row, 'terr') || extractValueForLabel(row, 'temeno') || extractValueForLabel(row, 'terreno');
-            if (val) {
-              cotaTerreno = val;
-            }
+      // Helper to find numeric value aligned on the same row to the right of a label cell using array indexing
+      const findNumericValueInLabelRow = (labelSub) => {
+        const foundRow = [...gridRows].reverse().find(row => {
+          const rowText = row.map(item => item.text.toUpperCase()).join(' ');
+          if (labelSub === 'TERRENO') {
+            return rowText.includes('TERRENO') || rowText.includes('TEMENO');
           }
-          
-          if (!cotaProjeto && (rowStrLower.includes('projeto') || rowStrLower.includes('proj') || rowStrLower.includes('terrap') || rowStrLower.includes('terap'))) {
-            const val = extractValueForLabel(row, 'proj') || extractValueForLabel(row, 'projeto') || extractValueForLabel(row, 'terrap') || extractValueForLabel(row, 'terap');
-            if (val) {
-              cotaProjeto = val;
-            }
+          if (labelSub === 'PROJETO') {
+            return rowText.includes('PROJETO') || rowText.includes('TERRAP') || rowText.includes('TERRIP') || rowText.includes('TERRP') || rowText.includes('TERAP') || rowText.includes('TERR.');
           }
+          return rowText.includes(labelSub.toUpperCase());
         });
-      }
 
-      // Anchor detection
-      const flattened = gridRows.reduce((acc, r) => [...acc, ...r], []);
-      const topAnchor = flattened.find(item => {
+        if (!foundRow) return '';
+
+        const labelCell = foundRow.find(item => {
+          const txt = item.text.toUpperCase();
+          if (labelSub === 'TERRENO') {
+            return txt.includes('TERRENO') || txt.includes('TEMENO');
+          }
+          if (labelSub === 'PROJETO') {
+            return txt.includes('PROJETO') || txt.includes('TERRAP') || txt.includes('TERRIP') || txt.includes('TERRP') || txt.includes('TERAP') || txt.includes('TERR.');
+          }
+          return txt.includes(labelSub.toUpperCase());
+        });
+
+        if (!labelCell) return '';
+
+        // Slice array after the label index (guarantees items on the right in visual reading order)
+        const labelIdx = foundRow.indexOf(labelCell);
+        const rightCells = foundRow.slice(labelIdx + 1);
+        
+        for (const cell of rightCells) {
+          const txt = cell.text.trim();
+          if (txt === '=' || txt === ':') continue;
+
+          const clean = txt.replace(/\s+/g, '').replace(',', '.');
+          if (/^-?[0-9.]+$/.test(clean)) {
+            return clean;
+          }
+        }
+
+        // Check inline as fallback
+        const inlineMatch = labelCell.text.match(/(?:terreno|temeno|projeto|terrap|terap|terrip|terrp)\.?\s*[=:]?\s*(-?[0-9]+[.,][0-9]+)/i) ||
+                            labelCell.text.match(/=\s*(-?[0-9]+[.,][0-9]+)/) || 
+                            labelCell.text.match(/:\s*(-?[0-9]+[.,][0-9]+)/);
+        if (inlineMatch) {
+           return inlineMatch[1].replace(',', '.');
+        }
+
+        return '';
+      };
+
+      // Robust decimal-only matching for elevations to prevent matching integer prefixes
+      const extractElevationRegex = (label) => {
+        let pattern = null;
+        if (label === 'terreno') {
+          pattern = /(?:terreno|temeno)\s*[=:]?\s*(-?[0-9]+[.,][0-9]+)/i;
+        } else if (label === 'projeto') {
+          pattern = /(?:projeto|terrap|terrip|terrp|terap|terap\.)\s*[=:]?\s*(-?[0-9]+[.,][0-9]+)/i;
+        }
+        
+        if (pattern) {
+          const match = reconstructedPageText.match(pattern) || pageText.match(pattern);
+          if (match) {
+            return match[1].replace(',', '.');
+          }
+        }
+        return '';
+      };
+
+      let cotaTerreno = findNumericValueInLabelRow('TERRENO') || extractElevationRegex('terreno') || '';
+      let cotaProjeto = findNumericValueInLabelRow('PROJETO') || extractElevationRegex('projeto') || '';
+
+      // Anchors for platform tables
+      const esqCell = flattened.find(item => /E\s*S\s*Q/i.test(item.text));
+      const dirCell = flattened.find(item => /D\s*I\s*R/i.test(item.text));
+
+      // Find row indices containing ESQUERDO or DIREITO to analyze stacked layout
+      let esqLabelIdx = -1;
+      let dirLabelIdx = -1;
+
+      gridRows.forEach((row, idx) => {
+        const rowText = row.map(item => item.text.toUpperCase()).join(' ');
+        const containsEsquerdo = rowText.includes('LADO ESQUERDO') || rowText.includes('ESQUERDO') || rowText.includes('PLATAFORMA ESQ') || rowText.includes('LADO ESQ');
+        const containsDireito = rowText.includes('LADO DIREITO') || rowText.includes('DIREITO') || rowText.includes('PLATAFORMA DIR') || rowText.includes('LADO DIR');
+
+        if (esqLabelIdx === -1 && containsEsquerdo) esqLabelIdx = idx;
+        if (dirLabelIdx === -1 && containsDireito) dirLabelIdx = idx;
+      });
+
+      const isStacked = esqLabelIdx !== -1 && dirLabelIdx !== -1 && esqLabelIdx !== dirLabelIdx;
+
+      // Detect visual coordinates direction (e.g. yIncreasesUpwards) from gridRows and flattened items
+      const topCell = flattened.find(item => {
         const txt = item.text.toUpperCase();
         return txt.includes('PLATAFORMA') || txt.includes('ESQUERDO') || txt.includes('DIREITO');
       }) || flattened.find(item => item.text.includes('+'));
 
-      const bottomAnchor = flattened.find(item => {
+      const bottomCell = flattened.find(item => {
         const txt = item.text.toUpperCase();
         return txt.includes('EMITENTE') || txt.includes('ESCALA') || txt.includes('OBJETO') || txt.includes('LOCAL') || txt.includes('COTA TERRENO') || txt.includes('COTA DO TERRENO') || txt.includes('COTA PROJETO');
       });
 
       let yIncreasesUpwards = true;
-      if (topAnchor && bottomAnchor && Math.abs(topAnchor.y - bottomAnchor.y) > 10) {
-        if (topAnchor.y < bottomAnchor.y) yIncreasesUpwards = false;
+      if (topCell && bottomCell && Math.abs(topCell.y - bottomCell.y) > 10) {
+        if (topCell.y < bottomCell.y) {
+          yIncreasesUpwards = false;
+        }
       }
 
-      // Left & Right
-      let esqAnchorY = null;
-      let dirAnchorY = null;
-
-      gridRows.forEach(row => {
-        const hasEsq = row.some(cell => {
-          const txt = cell.text.toUpperCase();
-          return txt.includes('ESQUERDO') || (txt.includes('LADO') && txt.includes('ESQ'));
-        });
-        const hasDir = row.some(cell => {
-          const txt = cell.text.toUpperCase();
-          return txt.includes('DIREITO') || (txt.includes('LADO') && txt.includes('DIR'));
-        });
-        const hasTableLabel = row.some(cell => {
-          const txt = cell.text.toUpperCase();
-          return txt.includes('DIST') || txt.includes('COTA') || txt.includes('PTO') || txt.includes('PLATAFORMA');
-        });
-
-        if (hasEsq && hasTableLabel && esqAnchorY === null) esqAnchorY = row[0].y;
-        if (hasDir && hasTableLabel && dirAnchorY === null) dirAnchorY = row[0].y;
-      });
-
-      if (esqAnchorY === null) {
-        const fallback = flattened.find(item => item.text.toUpperCase().includes('ESQUERDO'));
-        if (fallback) esqAnchorY = fallback.y;
-      }
-      if (dirAnchorY === null) {
-        const fallback = flattened.find(item => item.text.toUpperCase().includes('DIREITO'));
-        if (fallback) dirAnchorY = fallback.y;
-      }
-
+      // Helper to extract side platform points using physical layout parameters
       const extractPlatformSide = (sideKey) => {
-        const anchorY = sideKey === 'ESQUERDO' ? esqAnchorY : dirAnchorY;
-        if (anchorY === null) return [];
-
-        const otherAnchorY = sideKey === 'ESQUERDO' ? dirAnchorY : esqAnchorY;
-
-        const candidateRows = gridRows.filter(row => {
-          if (row.length === 0) return false;
-          const rowY = row[0].y;
-          if (otherAnchorY !== null) {
-            const distToThis = Math.abs(rowY - anchorY);
-            const distToOther = Math.abs(rowY - otherAnchorY);
-            if (distToOther < distToThis) return false;
+        let activeRows = [];
+        if (isStacked) {
+          // Calculate block starts including the PTO row directly above when applicable
+          let esqBlockStart = esqLabelIdx;
+          if (esqLabelIdx > 0) {
+            const prevRowText = gridRows[esqLabelIdx - 1].map(c => c.text.toUpperCase()).join(' ');
+            if (prevRowText.includes('PLATAFORMA') || prevRowText.includes('PTO') || prevRowText.includes('PONTO')) {
+              esqBlockStart = esqLabelIdx - 1;
+            }
           }
-          return Math.abs(rowY - anchorY) <= 80;
-        });
 
-        if (candidateRows.length === 0) return [];
+          let dirBlockStart = dirLabelIdx;
+          if (dirLabelIdx > 0) {
+            const prevRowText = gridRows[dirLabelIdx - 1].map(c => c.text.toUpperCase()).join(' ');
+            if (prevRowText.includes('PLATAFORMA') || prevRowText.includes('PTO') || prevRowText.includes('PONTO')) {
+              dirBlockStart = dirLabelIdx - 1;
+            }
+          }
 
-        if (yIncreasesUpwards) {
-          candidateRows.sort((a, b) => b[0].y - a[0].y);
+          if (sideKey === 'ESQUERDO') {
+            if (esqLabelIdx < dirLabelIdx) {
+              activeRows = gridRows.slice(esqBlockStart, dirBlockStart);
+            } else {
+              activeRows = gridRows.slice(esqBlockStart);
+            }
+          } else {
+            if (dirLabelIdx < esqLabelIdx) {
+              activeRows = gridRows.slice(dirBlockStart, esqBlockStart);
+            } else {
+              activeRows = gridRows.slice(dirBlockStart);
+            }
+          }
         } else {
-          candidateRows.sort((a, b) => a[0].y - b[0].y);
+          activeRows = gridRows;
         }
 
-        const tableRows = candidateRows.filter(row =>
-          row.some(cell => {
-            const txt = cell.text.toUpperCase().trim();
-            return /^-?[0-9.,]+$/.test(txt) ||
-                   txt.includes('PTO') ||
-                   txt.includes('DIST') ||
-                   (txt.includes('COTA') && !txt.includes('TERRENO') && !txt.includes('PROJETO'));
-          })
-        );
+        // Filter and isolate rows of the table within our working vertical slice
+        const validTableRows = activeRows.filter(row => {
+          const rowText = row.map(item => item.text.toUpperCase()).join(' ');
+          const isMetadataRow = [
+            'EMITENTE', 'ESCALA', 'OBJETO', 'LOCAL', 'CLIENTE', 'OBRA', 'TRECHO', 'SITUACAO', 'EIXO', 'ESTACA', 'RODOVIA', 'NOTA',
+            'COTA TERRENO', 'COTA PROJETO', 'COTA TERR', 'COTA PROJ', 'TERRENO', 'PROJETO', 'TERRAP', 'TERRIP', 'TERRP', 'TERAP', 'TEMENO', 'CORTE', 'ATERRO',
+            'BANDA', 'SECAO', 'SEÇÃO'
+          ].some(keyword => rowText.includes(keyword));
 
-        let ptoGridRow = [];
-        let distGridRow = [];
-        let cotaGridRow = [];
+          if (isMetadataRow) return false;
 
-        let bestCombination = { ptoIdx: -1, distIdx: -1, cotaIdx: -1, score: -Infinity };
-
-        const rowScores = tableRows.map((row, idx) => {
-          const rowText = row.map(c => c.text.toUpperCase()).join(' ');
-          const rowNums = row.map(cell => cell.text.replace(',', '.').trim()).filter(t => /^-?[0-9.]+$/.test(t)).map(t => parseFloat(t));
-
-          const hasPtoLabel = rowText.includes('PTO') || rowText.includes('PONTO');
-          const isMostlyInts = rowNums.length > 0 && rowNums.every(n => Number.isInteger(n) && n < 100);
-          
-          let ptoScore = 0;
-          if (hasPtoLabel) ptoScore += 200;
-          if (isMostlyInts) ptoScore += 50;
-          if (idx === 0) ptoScore += 40;
-          else if (idx === 1) ptoScore += 10;
-
-          const hasDistLabel = rowText.includes('DIST');
-          const hasZeroDist = row.some(cell => {
-            const t = cell.text.trim().replace(',', '.');
-            return t === '0' || t === '0.0' || t === '0.00' || t === '0,00';
-          });
-
-          let distScore = 0;
-          if (hasDistLabel) distScore += 200;
-          if (hasZeroDist) distScore += 80;
-          if (idx === 1) distScore += 40;
-          else if (idx === 0 || idx === tableRows.length - 1) distScore += 10;
-
-          const hasCotaLabel = rowText.includes('COTA') && !rowText.includes('TERRENO') && !rowText.includes('PROJETO');
-          
-          let matchesElevation = false;
-          if (rowNums.length > 0 && !hasZeroDist) {
-            const avg = rowNums.reduce((sum, n) => sum + n, 0) / rowNums.length;
-            const refElev = parseFloat(cotaTerreno.replace(',', '.')) || parseFloat(cotaProjeto.replace(',', '.'));
-            if (refElev && Math.abs(avg - refElev) < 120) {
-              matchesElevation = true;
-            } else if (avg > 15) {
-              matchesElevation = true;
-            }
-          }
-
-          let cotaScore = 0;
-          if (hasCotaLabel) cotaScore += 200;
-          if (matchesElevation) cotaScore += 50;
-          if (idx === tableRows.length - 1) cotaScore += 40;
-          else if (idx === tableRows.length - 2) cotaScore += 15;
-
-          return { ptoScore, distScore, cotaScore };
+          // Check if there are numerical values in this row
+          const hasNumbers = row.some(cell => isNumeric(cell.text));
+          return hasNumbers;
         });
 
-        const n = tableRows.length;
-        if (n >= 3) {
-          for (let i = 0; i < n; i++) {
-            for (let j = 0; j < n; j++) {
-              if (i === j) continue;
-              for (let k = 0; k < n; k++) {
-                if (i === k || j === k) continue;
-                const totalScore = rowScores[i].ptoScore + rowScores[j].distScore + rowScores[k].cotaScore;
-                if (totalScore > bestCombination.score) {
-                  bestCombination = { ptoIdx: i, distIdx: j, cotaIdx: k, score: totalScore };
-                }
-              }
+        // Filter cells based on horizontal layout if side-by-side
+        const splitRowBySide = (row) => {
+          if (isStacked) {
+            return row;
+          } else {
+            // Side-by-side: split horizontally using midpoint
+            const midX = (esqCell && dirCell) ? (esqCell.x + dirCell.x) / 2 : 455;
+            if (sideKey === 'ESQUERDO') {
+              return row.filter(cell => cell.x < midX);
+            } else {
+              return row.filter(cell => cell.x >= midX);
             }
           }
-        } else if (n === 2) {
-          let bestPair = { ptoIdx: -1, distIdx: -1, cotaIdx: -1, score: -Infinity };
-          for (let i = 0; i < n; i++) {
-            for (let j = 0; j < n; j++) {
-              if (i === j) continue;
-              const scoreDistCota = rowScores[i].distScore + rowScores[j].cotaScore;
-              if (scoreDistCota > bestPair.score) {
-                bestPair = { ptoIdx: -1, distIdx: i, cotaIdx: j, score: scoreDistCota };
-              }
-            }
-          }
-          bestCombination = bestPair;
-        }
+        };
 
-        if (bestCombination.ptoIdx !== -1) ptoGridRow = tableRows[bestCombination.ptoIdx];
-        if (bestCombination.distIdx !== -1) distGridRow = tableRows[bestCombination.distIdx];
-        if (bestCombination.cotaIdx !== -1) cotaGridRow = tableRows[bestCombination.cotaIdx];
+        // Extract cells matching each primary metric: PONTO (PTO), DISTÂNCIA (DIST), and COTA
+        let ptoRow = null;
+        let distRow = null;
+        let cotaRow = null;
+
+        validTableRows.forEach(row => {
+          const rowText = row.map(c => c.text.toUpperCase()).join(' ');
+          
+          // Check for PTO/PONTO text label
+          if ((rowText.includes('PTO') || rowText.includes('PONTO')) && !ptoRow) {
+            ptoRow = row;
+          }
+          // Check for DIST/DISTANCIA text label
+          else if ((rowText.includes('DIST') || rowText.includes('DISTAN') || rowText.includes('DISTÂN')) && !distRow) {
+            distRow = row;
+          }
+          // Check for COTA text label
+          else if (rowText.includes('COTA') && !cotaRow) {
+            cotaRow = row;
+          }
+        });
+
+        // Fallback relative vertical order within the valid table rows
+        if (!ptoRow && validTableRows.length > 0) ptoRow = validTableRows[0];
+        if (!distRow && validTableRows.length > 1) distRow = validTableRows[1];
+        if (!cotaRow && validTableRows.length > 2) cotaRow = validTableRows[2];
+
+        const filterNumericsOnly = (row) => {
+          const slicedRow = splitRowBySide(row);
+          return slicedRow.filter(cell => {
+            const txt = cell.text.trim();
+            const txtUpper = txt.toUpperCase();
+
+            if (txtUpper === 'PTO' || txtUpper === 'PTO.' || txtUpper === 'PONTO' || txtUpper === 'PONTO.') return false;
+            if (txtUpper === 'DIST' || txtUpper === 'DIST.' || txtUpper === 'DISTÂNCIA' || txtUpper === 'DISTANCIA') return false;
+            if (txtUpper === 'COTA' || txtUpper === 'COTA.') return false;
+            if (txtUpper.includes('PLATAFORMA') || txtUpper.includes('LADO') || txtUpper.includes('ESQUERDO') || txtUpper.includes('DIREITO') || txtUpper.includes('ACABADA')) return false;
+
+            return isNumeric(txt);
+          });
+        };
+
+        const ptos = ptoRow ? filterNumericsOnly(ptoRow) : [];
+        const dists = distRow ? filterNumericsOnly(distRow) : [];
+        const cotas = cotaRow ? filterNumericsOnly(cotaRow) : [];
+
+        // Sort horizontally in ascending x-coordinate order
+        ptos.sort((a, b) => a.x - b.x);
+        dists.sort((a, b) => a.x - b.x);
+        cotas.sort((a, b) => a.x - b.x);
 
         const itemsList = [];
-
-        const ptos = ptoGridRow.filter(cell => {
-          const txt = cell.text.toUpperCase().trim();
-          return !txt.includes('PTO') && !txt.includes('PLATAFORMA') && !txt.includes('ACABADA') && !txt.includes('LADO') && /^-?[0-9.,]+$/.test(txt);
-        });
-
-        const dists = distGridRow.filter(cell => {
-          const txt = cell.text.toUpperCase().trim();
-          return !txt.includes('DIST') && !txt.includes('LADO') && !txt.includes('ESQUERDO') && !txt.includes('DIREITO') && /^-?[0-9.,]+$/.test(txt);
-        });
-
-        const cotas = cotaGridRow.filter(cell => {
-          const txt = cell.text.toUpperCase().trim();
-          return !txt.includes('COTA') && /^-?[0-9.,]+$/.test(txt);
-        });
 
         if (ptos.length > 0) {
           ptos.forEach(ptoCell => {
             let dist = '';
             let cota = '';
 
+            // Find closest dist cell by x-coordinate proximity
             if (dists.length > 0) {
-              let best = dists[0];
-              let minDist = Math.abs(dists[0].x - ptoCell.x);
-              dists.forEach(dCell => {
-                const diff = Math.abs(dCell.x - ptoCell.x);
-                if (diff < minDist) {
-                  minDist = diff;
-                  best = dCell;
-                }
-              });
-              dist = best.text;
+              const closest = dists.reduce((prev, curr) => 
+                Math.abs(curr.x - ptoCell.x) < Math.abs(prev.x - ptoCell.x) ? curr : prev
+              );
+              dist = closest.text;
             }
 
+            // Find closest cota cell by x-coordinate proximity
             if (cotas.length > 0) {
-              let best = cotas[0];
-              let minCotaDist = Math.abs(cotas[0].x - ptoCell.x);
-              cotas.forEach(cCell => {
-                const diff = Math.abs(cCell.x - ptoCell.x);
-                if (diff < minCotaDist) {
-                  minCotaDist = diff;
-                  best = cCell;
-                }
-              });
-              cota = best.text;
+              const closest = cotas.reduce((prev, curr) => 
+                Math.abs(curr.x - ptoCell.x) < Math.abs(prev.x - ptoCell.x) ? curr : prev
+              );
+              cota = closest.text;
             }
 
             itemsList.push({
-              pto: ptoCell.text,
-              dist: dist,
-              cota: cota
+              pto: ptoCell.text.trim(),
+              dist: dist.trim(),
+              cota: cota.trim()
+            });
+          });
+        } else if (dists.length > 0) {
+          // Fallback when PTO row is empty or not parsed, use DIST as base key
+          dists.forEach((distCell, idx) => {
+            let cota = '';
+            if (cotas.length > 0) {
+              const closest = cotas.reduce((prev, curr) => 
+                Math.abs(curr.x - distCell.x) < Math.abs(prev.x - distCell.x) ? curr : prev
+              );
+              cota = closest.text;
+            }
+            itemsList.push({
+              pto: String(idx + 1),
+              dist: distCell.text.trim(),
+              cota: cota.trim()
             });
           });
         }
@@ -928,12 +963,15 @@
         return itemsList;
       };
 
+      const esquerda = extractPlatformSide('ESQUERDO');
+      const direita = extractPlatformSide('DIREITO');
+
       return {
         estaca: estaca || 'Não identificada',
         cotaTerreno: cotaTerreno || '---',
         cotaProjeto: cotaProjeto || '---',
-        esquerda: extractPlatformSide('ESQUERDO'),
-        direita: extractPlatformSide('DIREITO'),
+        esquerda: esquerda,
+        direita: direita
       };
     }
 
