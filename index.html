@@ -451,7 +451,7 @@
             const textContent = await page.getTextContent();
             
             // Grid sorting and extraction
-            const gridRows = reconstructGridRows(textContent.items, state.tolerance);
+            const gridRows = reconstructGridRows(textContent.items, state.tolerance, page);
             const pageRawText = textContent.items.map(item => item.str).join(' ');
             const cleanText = pageRawText.replace(/\s+/g, ' ').trim();
             const extracted = runHeuristicExtractor(gridRows, cleanText);
@@ -507,8 +507,45 @@
 
       setTimeout(() => {
         state.pages = state.pages.map(page => {
-          const items = page.originalTextItems || [];
-          const newRows = reconstructGridRows(items, state.tolerance);
+          // Flatten existing rows
+          const flattened = page.gridRows.reduce((acc, row) => [...acc, ...row], []);
+          
+          const newRows = [];
+          flattened.forEach(item => {
+            const foundRow = newRows.find(row => Math.abs(row[0].y - item.y) <= state.tolerance);
+            if (foundRow) {
+              foundRow.push(item);
+            } else {
+              newRows.push([item]);
+            }
+          });
+
+          // Dynamically detect Y direction of raw coordinates from flattened items
+          const topAnchor = flattened.find(item => {
+            const txt = item.text.toUpperCase();
+            return txt.includes('PLATAFORMA') || txt.includes('ESQUERDO') || txt.includes('DIREITO');
+          }) || flattened.find(item => item.text.includes('+'));
+
+          const bottomAnchor = flattened.find(item => {
+            const txt = item.text.toUpperCase();
+            return txt.includes('EMITENTE') || txt.includes('ESCALA') || txt.includes('OBJETO') || txt.includes('LOCAL') || txt.includes('COTA TERRENO') || txt.includes('COTA DO TERRENO') || txt.includes('COTA PROJETO');
+          });
+
+          let yIncreasesUpwards = true;
+          if (topAnchor && bottomAnchor && Math.abs(topAnchor.y - bottomAnchor.y) > 10) {
+            if (topAnchor.y < bottomAnchor.y) {
+              yIncreasesUpwards = false;
+            }
+          }
+
+          if (yIncreasesUpwards) {
+            newRows.sort((a, b) => b[0].y - a[0].y);
+          } else {
+            newRows.sort((a, b) => a[0].y - b[0].y);
+          }
+
+          newRows.forEach(row => row.sort((a, b) => a.x - b.x));
+
           const updatedExtracted = runHeuristicExtractor(newRows, page.rawText);
 
           return {
@@ -523,16 +560,35 @@
       }, 100);
     }
 
-    // Row reconstruction grouping Y algorithm from main applet to vanilla JS
-    function reconstructGridRows(items, yTolerance) {
-      const processed = items.map(item => ({
-        text: item.str,
-        x: item.transform[4],
-        y: item.transform[5],
-        w: item.width,
-        h: item.height
-      })).filter(it => it.text.trim() !== '');
+    // Row reconstruction grouping Y algorithm matching index.tsx exactly
+    function reconstructGridRows(items, yTolerance, page) {
+      let processed = [];
 
+      if (page) {
+        const viewport = page.getViewport({ scale: 1.0 });
+        processed = items.map(item => {
+          // Convert raw PDF coordinates (x, y) to viewport space (x_pixel, y_pixel)
+          // This automatically compensates for page rotation (90, 180, 270 degrees)
+          const [vx, vy] = viewport.convertToViewportPoint(item.transform[4], item.transform[5]);
+          return {
+            text: item.str,
+            x: vx,
+            y: vy,
+            w: item.width,
+            h: item.height
+          };
+        }).filter(it => it.text.trim() !== '');
+      } else {
+        processed = items.map(item => ({
+          text: item.str,
+          x: item.transform[4],
+          y: item.transform[5],
+          w: item.width,
+          h: item.height
+        })).filter(it => it.text.trim() !== '');
+      }
+
+      // Deduplicate almost identical/overlapping items (e.g., duplicate graphic text overlays on CAD-generated PDFs)
       const uniqueProcessed = [];
       processed.forEach(item => {
         const isDuplicate = uniqueProcessed.some(existing => {
@@ -546,8 +602,11 @@
         }
       });
 
+      // Sort items by Y ascending to group sequentially from top of page to bottom
+      const sortedUnique = [...uniqueProcessed].sort((a, b) => a.y - b.y);
       const rows = [];
-      uniqueProcessed.forEach(item => {
+      
+      sortedUnique.forEach(item => {
         const foundRow = rows.find(row => Math.abs(row[0].y - item.y) <= yTolerance);
         if (foundRow) {
           foundRow.push(item);
@@ -556,50 +615,12 @@
         }
       });
 
-      // Identify anchors for orientation y axis
-      const topAnchor = uniqueProcessed.find(item => {
-        const txt = item.text.toUpperCase();
-        return txt.includes('PLATAFORMA') || txt.includes('ESQUERDO') || txt.includes('DIREITO');
-      }) || uniqueProcessed.find(item => item.text.includes('+'));
+      // Sort rows from top of visual vertical page to bottom (ascending order)
+      rows.sort((a, b) => a[0].y - b[0].y);
 
-      const bottomAnchor = uniqueProcessed.find(item => {
-        const txt = item.text.toUpperCase();
-        return txt.includes('EMITENTE') || txt.includes('ESCALA') || txt.includes('OBJETO') || txt.includes('LOCAL') || txt.includes('COTA TERRENO') || txt.includes('COTA DO TERRENO') || txt.includes('COTA PROJETO');
-      });
-
-      let yIncreasesUpwards = true;
-      if (topAnchor && bottomAnchor && Math.abs(topAnchor.y - bottomAnchor.y) > 10) {
-        if (topAnchor.y < bottomAnchor.y) {
-          yIncreasesUpwards = false;
-        }
-      }
-
-      // Sort rows
-      if (yIncreasesUpwards) {
-        rows.sort((a, b) => b[0].y - a[0].y);
-      } else {
-        rows.sort((a, b) => a[0].y - b[0].y);
-      }
-
-      let xIncreasesRightwards = true;
-      const leftLabel = uniqueProcessed.find(item => item.text.toUpperCase().includes('ESQUERDO') || item.text.toUpperCase().includes('DIREITO'));
-      if (leftLabel) {
-        const sameRow = uniqueProcessed.filter(item => Math.abs(item.y - leftLabel.y) < 5 && item !== leftLabel);
-        const numerics = sameRow.filter(item => /^-?[0-9.,]+$/.test(item.text.trim()));
-        if (numerics.length > 0) {
-          const avgNumX = numerics.reduce((sum, item) => sum + item.x, 0) / numerics.length;
-          if (avgNumX < leftLabel.x) {
-            xIncreasesRightwards = false;
-          }
-        }
-      }
-
+      // Sort items within each row from Left to Right physically (ascending order)
       rows.forEach(row => {
-        if (xIncreasesRightwards) {
-          row.sort((a, b) => a.x - b.x);
-        } else {
-          row.sort((a, b) => b.x - a.x);
-        }
+        row.sort((a, b) => a.x - b.x);
       });
 
       return rows;
